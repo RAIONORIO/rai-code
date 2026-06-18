@@ -1,0 +1,34 @@
+{
+  "language": "typescript",
+  "rules": [
+    {
+      "id": "typescript-missing-usestate-import",
+      "title": "useState usado sem importação",
+      "severity": "error",
+      "description": "O arquivo usa useState, mas pode não ter importado useState do React.",
+      "detect": {
+        "extensions": [".tsx", ".ts"],
+        "contains": ["useState("],
+        "notContainsAny": ["useState,", "useState }", "{ useState", "{useState"]
+      },
+      "suggestion": {
+        "message": "Importe useState de React no topo do arquivo.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "typescript-tauri-invoke-command-check",
+      "title": "Chamada invoke precisa existir no backend Rust",
+      "severity": "warning",
+      "description": "Quando o frontend chama invoke, o comando precisa existir no Rust e estar registrado no invoke_handler.",
+      "detect": {
+        "extensions": [".tsx", ".ts"],
+        "contains": ["invoke<", "invoke("]
+      },
+      "suggestion": {
+        "message": "Verifique se o comando chamado no invoke existe em src-tauri/src/lib.rs e está no generate_handler.",
+        "safeAutoFix": false
+      }
+    }
+  ]
+}

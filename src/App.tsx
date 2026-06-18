@@ -18,6 +18,15 @@ type FileItem = {
   depth: number;
 };
 
+type AnalysisIssue = {
+  id: string;
+  title: string;
+  severity: string;
+  description: string;
+  suggestion: string;
+  matched_rule: string;
+};
+
 function App() {
   const [projectPath, setProjectPath] = useState("");
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -112,7 +121,7 @@ Clique em um arquivo para visualizar.`,
     }
   }
 
-  function handleSendMessage() {
+  async function handleSendMessage() {
     const text = chatText.trim();
 
     if (!text) {
@@ -138,6 +147,35 @@ Esse arquivo não tem conteúdo de texto carregado no momento. Pode ser uma imag
             )}\n\n...conteúdo cortado para visualização inicial...`
           : fileContent;
 
+      let analysisResult = "";
+
+      try {
+        const issues = await invoke<AnalysisIssue[]>("analyze_project_file", {
+          filePath: selectedFile.path,
+          relativePath: selectedFile.relative_path,
+          fileContent,
+        });
+
+        if (issues.length === 0) {
+          analysisResult =
+            "Análise local: nenhum problema conhecido foi encontrado pelas regras atuais.";
+        } else {
+          analysisResult = issues
+            .map(
+              (issue, index) => `${index + 1}. ${issue.title}
+Severidade: ${issue.severity}
+Descrição: ${issue.description}
+Sugestão: ${issue.suggestion}
+Regra consultada: ${issue.matched_rule}`
+            )
+            .join("\n\n");
+        }
+      } catch (error) {
+        analysisResult = `Não consegui executar a análise local: ${String(
+          error
+        )}`;
+      }
+
       assistantContent = `Arquivo atual: ${selectedFile.relative_path}
 
 Tamanho do conteúdo: ${fileContent.length} caracteres.
@@ -145,11 +183,15 @@ Tamanho do conteúdo: ${fileContent.length} caracteres.
 Pedido recebido:
 ${text}
 
+Resultado da análise local:
+
+${analysisResult}
+
 Prévia do arquivo:
 
 ${preview}
 
-Na próxima etapa, esse conteúdo será enviado para uma IA real para explicar, corrigir ou sugerir alterações. Por enquanto eu já estou lendo o arquivo selecionado. Pouco glamouroso, mas funcional.`;
+O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda não aplica alterações automaticamente. Isso é bom, porque programa mexendo em pasta sem confirmação é basicamente um guaxinim com acesso de administrador.`;
     }
 
     setMessages((currentMessages) => [

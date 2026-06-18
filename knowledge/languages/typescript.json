@@ -1,0 +1,25 @@
+{
+  "name": "TypeScript",
+  "extensions": [".ts", ".tsx"],
+  "category": "language",
+  "commonUses": [
+    "frontend",
+    "backend",
+    "desktop apps with Tauri",
+    "React components",
+    "Node.js applications"
+  ],
+  "fileSignals": {
+    "reactComponent": [".tsx", "jsx", "useState", "useEffect"],
+    "nodeFile": ["require(", "module.exports", "process.env"],
+    "tauriFrontend": ["@tauri-apps/api", "invoke("]
+  },
+  "basicChecks": [
+    "Verificar imports ausentes.",
+    "Verificar tipos incompatíveis.",
+    "Verificar variáveis declaradas e não usadas.",
+    "Verificar funções chamadas sem definição.",
+    "Verificar uso incorreto de hooks React.",
+    "Verificar chamadas Tauri invoke sem comando Rust correspondente."
+  ]
+}

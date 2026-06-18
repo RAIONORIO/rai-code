@@ -1,0 +1,86 @@
+{
+  "version": "0.1.0",
+  "description": "Base local de conhecimento do Raí Code para análise de projetos, linguagens, frameworks, regras e correções.",
+  "languages": {
+    "javascript": {
+      "extensions": [".js", ".mjs", ".cjs"],
+      "definition": "knowledge/languages/javascript.json",
+      "rules": "knowledge/rules/javascript-rules.json",
+      "fixes": "knowledge/fixes/javascript-fixes.json"
+    },
+    "typescript": {
+      "extensions": [".ts", ".tsx"],
+      "definition": "knowledge/languages/typescript.json",
+      "rules": "knowledge/rules/typescript-rules.json",
+      "fixes": "knowledge/fixes/typescript-fixes.json"
+    },
+    "html": {
+      "extensions": [".html", ".htm"],
+      "definition": "knowledge/languages/html.json",
+      "rules": "knowledge/rules/html-rules.json",
+      "fixes": "knowledge/fixes/html-fixes.json"
+    },
+    "css": {
+      "extensions": [".css"],
+      "definition": "knowledge/languages/css.json",
+      "rules": "knowledge/rules/css-rules.json",
+      "fixes": "knowledge/fixes/css-fixes.json"
+    },
+    "rust": {
+      "extensions": [".rs"],
+      "definition": "knowledge/languages/rust.json",
+      "rules": "knowledge/rules/rust-rules.json",
+      "fixes": "knowledge/fixes/rust-fixes.json"
+    },
+    "python": {
+      "extensions": [".py"],
+      "definition": "knowledge/languages/python.json",
+      "rules": "knowledge/rules/python-rules.json",
+      "fixes": "knowledge/fixes/python-fixes.json"
+    },
+    "java": {
+      "extensions": [".java"],
+      "definition": "knowledge/languages/java.json",
+      "rules": "knowledge/rules/java-rules.json",
+      "fixes": "knowledge/fixes/java-fixes.json"
+    }
+  },
+  "runtimes": {
+    "nodejs": {
+      "definition": "knowledge/runtimes/nodejs.json",
+      "rules": "knowledge/rules/nodejs-rules.json",
+      "fixes": "knowledge/fixes/nodejs-fixes.json"
+    }
+  },
+  "frameworks": {
+    "react": {
+      "definition": "knowledge/frameworks/react.json"
+    },
+    "vite": {
+      "definition": "knowledge/frameworks/vite.json"
+    },
+    "tauri": {
+      "definition": "knowledge/frameworks/tauri.json"
+    },
+    "springBoot": {
+      "definition": "knowledge/frameworks/spring-boot.json"
+    },
+    "fastapi": {
+      "definition": "knowledge/frameworks/fastapi.json"
+    }
+  },
+  "projectPatterns": {
+    "reactViteTauri": {
+      "definition": "knowledge/project-patterns/react-vite-tauri.json"
+    },
+    "nodeApi": {
+      "definition": "knowledge/project-patterns/node-api.json"
+    },
+    "springApi": {
+      "definition": "knowledge/project-patterns/spring-api.json"
+    },
+    "pythonFastapi": {
+      "definition": "knowledge/project-patterns/python-fastapi.json"
+    }
+  }
+}

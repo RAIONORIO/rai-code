@@ -1,0 +1,30 @@
+{
+  "name": "React + Vite + Tauri",
+  "type": "desktop-app",
+  "requiredFiles": [
+    "package.json",
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/App.css",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/main.rs"
+  ],
+  "expectedFrontend": {
+    "framework": "React",
+    "language": "TypeScript",
+    "bundler": "Vite"
+  },
+  "expectedBackend": {
+    "runtime": "Rust",
+    "framework": "Tauri"
+  },
+  "commonProblems": [
+    "Frontend chama invoke, mas o comando Rust não existe.",
+    "Comando Rust existe, mas não foi registrado no invoke_handler.",
+    "Plugin Tauri usado no frontend não foi registrado no backend.",
+    "Layout quebra por falta de min-width: 0 em painéis flex.",
+    "Arquivos grandes ou binários não devem ser lidos como texto."
+  ]
+}
