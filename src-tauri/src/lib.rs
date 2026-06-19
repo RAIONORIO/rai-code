@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -61,33 +62,281 @@ fn file_extension(file_path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn has_react_named_import(content: &str, name: &str) -> bool {
-    content.lines().any(|line| {
-        let clean_line = line.trim();
+fn infer_project_root(file_path: &str, relative_path: &str) -> PathBuf {
+    let full_path = PathBuf::from(file_path);
 
-        clean_line.starts_with("import")
-            && (clean_line.contains("from \"react\"") || clean_line.contains("from 'react'"))
-            && clean_line.contains(name)
-    })
+    if relative_path.trim().is_empty() {
+        return full_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+    }
+
+    let relative_components = Path::new(relative_path).components().count();
+    let mut root = full_path.clone();
+
+    for _ in 0..relative_components {
+        root.pop();
+    }
+
+    if root.as_os_str().is_empty() {
+        full_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    } else {
+        root
+    }
 }
 
-fn add_analysis_issue(
-    issues: &mut Vec<AnalysisIssue>,
+fn string_from_value(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Number(number)) => Some(number.to_string()),
+        Some(Value::Bool(boolean)) => Some(boolean.to_string()),
+        _ => None,
+    }
+}
+
+fn strings_from_value(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(text)) => vec![text.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| string_from_value(Some(item)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn strings_from_keys(value: &Value, keys: &[&str]) -> Vec<String> {
+    let mut result = Vec::new();
+
+    for key in keys {
+        result.extend(strings_from_value(value.get(*key)));
+    }
+
+    result
+}
+
+fn read_json_file(path: &Path) -> Result<Value, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Não foi possível ler {}: {}", path.display(), error))?;
+
+    serde_json::from_str::<Value>(&content)
+        .map_err(|error| format!("JSON inválido em {}: {}", path.display(), error))
+}
+
+fn fallback_language_by_extension(extension: &str) -> Option<String> {
+    match extension {
+        ".js" | ".mjs" | ".cjs" | ".jsx" => Some("javascript".to_string()),
+        ".ts" | ".tsx" => Some("typescript".to_string()),
+        ".html" | ".htm" => Some("html".to_string()),
+        ".css" => Some("css".to_string()),
+        ".rs" => Some("rust".to_string()),
+        ".py" => Some("python".to_string()),
+        ".java" => Some("java".to_string()),
+        _ => None,
+    }
+}
+
+fn language_from_index(index_json: &Value, extension: &str) -> Option<(String, Value)> {
+    let languages = index_json.get("languages")?.as_object()?;
+
+    for (language_name, config) in languages {
+        let extensions = strings_from_value(config.get("extensions"));
+
+        if extensions
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(extension))
+        {
+            return Some((language_name.clone(), config.clone()));
+        }
+    }
+
+    None
+}
+
+fn resolve_knowledge_path(project_root: &Path, raw_path: &str) -> PathBuf {
+    let path = PathBuf::from(raw_path);
+
+    if path.is_absolute() {
+        return path;
+    }
+
+    let normalized = raw_path.replace('\\', "/");
+
+    if normalized.starts_with("knowledge/") {
+        project_root.join(raw_path)
+    } else {
+        project_root.join("knowledge").join(raw_path)
+    }
+}
+
+fn fallback_rules_path(project_root: &Path, language: &str) -> PathBuf {
+    project_root
+        .join("knowledge")
+        .join("rules")
+        .join(format!("{}-rules.json", language))
+}
+
+fn extract_rules(rules_json: &Value) -> Vec<Value> {
+    match rules_json {
+        Value::Array(items) => items.clone(),
+        Value::Object(map) => {
+            if let Some(Value::Array(items)) = map.get("rules") {
+                return items.clone();
+            }
+
+            if let Some(Value::Array(items)) = map.get("items") {
+                return items.clone();
+            }
+
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn suggestion_from_rule(rule: &Value) -> String {
+    match rule.get("suggestion") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Object(_)) => string_from_value(rule.get("suggestion").and_then(|value| {
+            value.get("message")
+                .or_else(|| value.get("text"))
+                .or_else(|| value.get("description"))
+        }))
+        .unwrap_or_else(|| "Revise o trecho indicado antes de alterar o arquivo.".to_string()),
+        _ => string_from_value(rule.get("fix"))
+            .or_else(|| string_from_value(rule.get("recommendation")))
+            .unwrap_or_else(|| "Revise o trecho indicado antes de alterar o arquivo.".to_string()),
+    }
+}
+
+fn rule_id(rule: &Value) -> String {
+    string_from_value(rule.get("id"))
+        .or_else(|| string_from_value(rule.get("code")))
+        .or_else(|| string_from_value(rule.get("name")))
+        .unwrap_or_else(|| "regra-sem-id".to_string())
+}
+
+fn issue_from_rule(rule: &Value, matched_rule: &str) -> AnalysisIssue {
+    AnalysisIssue {
+        id: rule_id(rule),
+        title: string_from_value(rule.get("title"))
+            .or_else(|| string_from_value(rule.get("name")))
+            .unwrap_or_else(|| "Problema encontrado".to_string()),
+        severity: string_from_value(rule.get("severity"))
+            .or_else(|| string_from_value(rule.get("level")))
+            .unwrap_or_else(|| "info".to_string()),
+        description: string_from_value(rule.get("description"))
+            .or_else(|| string_from_value(rule.get("explanation")))
+            .or_else(|| string_from_value(rule.get("message")))
+            .unwrap_or_else(|| "Uma regra local encontrou um possível problema.".to_string()),
+        suggestion: suggestion_from_rule(rule),
+        matched_rule: matched_rule.to_string(),
+    }
+}
+
+fn internal_issue(
     id: &str,
     title: &str,
     severity: &str,
     description: &str,
     suggestion: &str,
     matched_rule: &str,
-) {
-    issues.push(AnalysisIssue {
+) -> AnalysisIssue {
+    AnalysisIssue {
         id: id.to_string(),
         title: title.to_string(),
         severity: severity.to_string(),
         description: description.to_string(),
         suggestion: suggestion.to_string(),
         matched_rule: matched_rule.to_string(),
-    });
+    }
+}
+
+fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> bool {
+    let detect = rule.get("detect").unwrap_or(rule);
+
+    let extensions = strings_from_value(detect.get("extensions"));
+
+    if !extensions.is_empty()
+        && !extensions
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(extension))
+    {
+        return false;
+    }
+
+    let contains_any = strings_from_keys(
+        detect,
+        &[
+            "contains",
+            "containsAny",
+            "contains_any",
+            "pattern",
+            "patterns",
+        ],
+    );
+
+    let contains_all = strings_from_keys(
+        detect,
+        &[
+            "containsAll",
+            "contains_all",
+            "mustContain",
+            "must_contain",
+            "required",
+        ],
+    );
+
+    let not_contains_any = strings_from_keys(
+        detect,
+        &[
+            "notContainsAny",
+            "not_contains_any",
+            "notContains",
+            "not_contains",
+        ],
+    );
+
+    let mut has_content_condition = false;
+
+    if !contains_any.is_empty() {
+        has_content_condition = true;
+
+        if !contains_any
+            .iter()
+            .any(|pattern| file_content.contains(pattern))
+        {
+            return false;
+        }
+    }
+
+    if !contains_all.is_empty() {
+        has_content_condition = true;
+
+        if contains_all
+            .iter()
+            .any(|pattern| !file_content.contains(pattern))
+        {
+            return false;
+        }
+    }
+
+    if !not_contains_any.is_empty() {
+        has_content_condition = true;
+
+        if not_contains_any
+            .iter()
+            .any(|pattern| file_content.contains(pattern))
+        {
+            return false;
+        }
+    }
+
+    has_content_condition
 }
 
 fn collect_entries(
@@ -212,86 +461,84 @@ fn analyze_project_file(
     file_content: String,
 ) -> Result<Vec<AnalysisIssue>, String> {
     let extension = file_extension(&file_path);
-    let analyzed_file = if relative_path.trim().is_empty() {
-        file_path
-    } else {
-        relative_path
+    let project_root = infer_project_root(&file_path, &relative_path);
+    let index_path = project_root.join("knowledge").join("index.json");
+
+    if !index_path.exists() {
+        return Ok(vec![internal_issue(
+            "knowledge-index-not-found",
+            "Base local não encontrada",
+            "warning",
+            &format!(
+                "O Raí Code procurou a base local em: {}",
+                index_path.display()
+            ),
+            "Confirme se a pasta knowledge está na raiz do projeto aberto.",
+            "knowledge/index.json",
+        )]);
+    }
+
+    let index_json = read_json_file(&index_path)?;
+
+    let language_result = language_from_index(&index_json, &extension).or_else(|| {
+        fallback_language_by_extension(&extension).map(|language| (language, Value::Null))
+    });
+
+    let (language, language_config) = match language_result {
+        Some(result) => result,
+        None => {
+            return Ok(vec![internal_issue(
+                "language-not-supported",
+                "Linguagem não suportada",
+                "info",
+                &format!(
+                    "Ainda não existe mapeamento local para arquivos com extensão {}.",
+                    extension
+                ),
+                "Adicione essa extensão em knowledge/index.json e crie o arquivo de regras correspondente.",
+                "knowledge/index.json",
+            )]);
+        }
     };
 
-    let mut issues = Vec::new();
+    let rules_path = string_from_value(language_config.get("rules"))
+        .map(|raw_path| resolve_knowledge_path(&project_root, &raw_path))
+        .unwrap_or_else(|| fallback_rules_path(&project_root, &language));
 
-    if extension == ".ts" || extension == ".tsx" {
-        if file_content.contains("useState(") && !has_react_named_import(&file_content, "useState")
-        {
-            add_analysis_issue(
-                &mut issues,
-                "typescript-react-usestate-missing-import",
-                "useState usado sem importação",
-                "error",
-                "O arquivo usa useState, mas não encontrei useState importado do React.",
-                "Adicione useState no import do React.",
-                "knowledge/rules/typescript-rules.json",
-            );
-        }
-
-        if file_content.contains("useMemo(") && !has_react_named_import(&file_content, "useMemo") {
-            add_analysis_issue(
-                &mut issues,
-                "typescript-react-usememo-missing-import",
-                "useMemo usado sem importação",
-                "error",
-                "O arquivo usa useMemo, mas não encontrei useMemo importado do React.",
-                "Adicione useMemo no import do React.",
-                "knowledge/rules/typescript-rules.json",
-            );
-        }
-
-        if file_content.contains("invoke(") || file_content.contains("invoke<") {
-            let description = format!(
-                "O arquivo {} chama invoke do Tauri. O comando chamado precisa existir no backend Rust e estar registrado no invoke_handler.",
-                analyzed_file
-            );
-
-            add_analysis_issue(
-                &mut issues,
-                "typescript-tauri-invoke-check",
-                "Chamada invoke precisa existir no backend Rust",
-                "warning",
-                &description,
-                "Confira se o comando existe em src-tauri/src/lib.rs e se está dentro de tauri::generate_handler!.",
-                "knowledge/rules/typescript-rules.json",
-            );
-        }
+    if !rules_path.exists() {
+        return Ok(vec![internal_issue(
+            "rules-file-not-found",
+            "Arquivo de regras não encontrado",
+            "warning",
+            &format!("O arquivo de regras não foi encontrado em: {}", rules_path.display()),
+            "Crie o arquivo de regras dessa linguagem dentro de knowledge/rules ou ajuste o caminho em knowledge/index.json.",
+            &path_to_string(&rules_path),
+        )]);
     }
 
-    if extension == ".css" {
-        if file_content.contains(".chat-panel") && file_content.contains("display: none") {
-            add_analysis_issue(
-                &mut issues,
-                "css-chat-panel-hidden",
-                "Chat pode estar sendo escondido pelo CSS",
-                "warning",
-                "O CSS contém .chat-panel junto com display: none. Isso pode esconder o painel de chat.",
-                "Remova display: none do .chat-panel ou revise a media query responsável.",
-                "knowledge/rules/css-rules.json",
-            );
-        }
+    let rules_json = read_json_file(&rules_path)?;
+    let rules = extract_rules(&rules_json);
+    let rules_file_label = path_to_string(&rules_path);
 
-        if file_content.contains("display: flex")
-            && !file_content.contains("min-width: 0")
-            && file_content.contains("overflow")
-        {
-            add_analysis_issue(
-                &mut issues,
-                "css-flex-overflow-min-width",
-                "Layout flex pode quebrar com conteúdo longo",
-                "info",
-                "O arquivo usa flex e overflow, mas pode precisar de min-width: 0 em painéis internos.",
-                "Verifique os containers flex principais e adicione min-width: 0 onde o conteúdo estiver empurrando o layout.",
-                "knowledge/rules/css-rules.json",
-            );
-        }
+    if rules.is_empty() {
+        return Ok(vec![internal_issue(
+            "rules-empty",
+            "Nenhuma regra cadastrada",
+            "info",
+            &format!(
+                "O arquivo de regras existe, mas ainda não possui regras em uma lista chamada rules. Linguagem identificada: {}.",
+                language
+            ),
+            "Adicione regras no formato { \"rules\": [ ... ] }.",
+            &rules_file_label,
+        )]);
     }
+
+    let issues = rules
+        .iter()
+        .filter(|rule| rule_matches(rule, &extension, &file_content))
+        .map(|rule| issue_from_rule(rule, &rules_file_label))
+        .collect();
 
     Ok(issues)
 }
