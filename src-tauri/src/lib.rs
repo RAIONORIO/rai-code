@@ -20,6 +20,14 @@ struct AnalysisIssue {
     description: String,
     suggestion: String,
     matched_rule: String,
+    line: Option<usize>,
+    matched_text: Option<String>,
+}
+
+#[derive(Clone)]
+struct RuleMatch {
+    line: Option<usize>,
+    matched_text: Option<String>,
 }
 
 const MAX_ITEMS: usize = 800;
@@ -270,7 +278,7 @@ fn rule_id(rule: &Value) -> String {
         .unwrap_or_else(|| "regra-sem-id".to_string())
 }
 
-fn issue_from_rule(rule: &Value, matched_rule: &str) -> AnalysisIssue {
+fn issue_from_rule(rule: &Value, matched_rule: &str, rule_match: RuleMatch) -> AnalysisIssue {
     AnalysisIssue {
         id: rule_id(rule),
         title: string_from_value(rule.get("title"))
@@ -285,6 +293,8 @@ fn issue_from_rule(rule: &Value, matched_rule: &str) -> AnalysisIssue {
             .unwrap_or_else(|| "Uma regra local encontrou um possível problema.".to_string()),
         suggestion: suggestion_from_rule(rule),
         matched_rule: matched_rule.to_string(),
+        line: rule_match.line,
+        matched_text: rule_match.matched_text,
     }
 }
 
@@ -303,10 +313,44 @@ fn internal_issue(
         description: description.to_string(),
         suggestion: suggestion.to_string(),
         matched_rule: matched_rule.to_string(),
+        line: None,
+        matched_text: None,
     }
 }
 
-fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> bool {
+fn find_line_info(file_content: &str, pattern: &str) -> Option<RuleMatch> {
+    if pattern.trim().is_empty() {
+        return None;
+    }
+
+    file_content
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains(pattern))
+        .map(|(index, line)| RuleMatch {
+            line: Some(index + 1),
+            matched_text: Some(line.trim().to_string()),
+        })
+}
+
+fn find_first_existing_pattern(file_content: &str, patterns: &[String]) -> Option<RuleMatch> {
+    for pattern in patterns {
+        if let Some(found) = find_line_info(file_content, pattern) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn first_missing_pattern(file_content: &str, patterns: &[String]) -> Option<String> {
+    patterns
+        .iter()
+        .find(|pattern| !file_content.contains(pattern.as_str()))
+        .cloned()
+}
+
+fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> Option<RuleMatch> {
     let detect = rule.get("detect").unwrap_or(rule);
 
     let extensions = strings_from_value(detect.get("extensions"));
@@ -316,7 +360,7 @@ fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> bool {
             .iter()
             .any(|item| item.eq_ignore_ascii_case(extension))
     {
-        return false;
+        return None;
     }
 
     let contains_any = strings_from_keys(
@@ -352,41 +396,57 @@ fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> bool {
     );
 
     let mut has_content_condition = false;
+    let mut captured_match: Option<RuleMatch> = None;
 
     if !contains_any.is_empty() {
         has_content_condition = true;
 
-        if !contains_any
-            .iter()
-            .any(|pattern| file_content.contains(pattern))
-        {
-            return false;
+        match find_first_existing_pattern(file_content, &contains_any) {
+            Some(found) => {
+                captured_match = Some(found);
+            }
+            None => return None,
         }
     }
 
     if !contains_all.is_empty() {
         has_content_condition = true;
 
-        if contains_all
-            .iter()
-            .any(|pattern| !file_content.contains(pattern))
-        {
-            return false;
+        if first_missing_pattern(file_content, &contains_all).is_some() {
+            return None;
+        }
+
+        if captured_match.is_none() {
+            captured_match = find_first_existing_pattern(file_content, &contains_all);
         }
     }
 
     if !not_contains_any.is_empty() {
         has_content_condition = true;
 
-        if not_contains_any
-            .iter()
-            .any(|pattern| file_content.contains(pattern))
-        {
-            return false;
+        if find_first_existing_pattern(file_content, &not_contains_any).is_some() {
+            return None;
+        }
+
+        if captured_match.is_none() {
+            captured_match = Some(RuleMatch {
+                line: None,
+                matched_text: Some(format!(
+                    "Ausente: {}",
+                    not_contains_any.join(" | ")
+                )),
+            });
         }
     }
 
-    has_content_condition
+    if has_content_condition {
+        return Some(captured_match.unwrap_or(RuleMatch {
+            line: None,
+            matched_text: None,
+        }));
+    }
+
+    None
 }
 
 fn collect_entries(
@@ -587,8 +647,10 @@ fn analyze_project_file(
 
     let issues = rules
         .iter()
-        .filter(|rule| rule_matches(rule, &extension, &file_content))
-        .map(|rule| issue_from_rule(rule, &rules_file_label))
+        .filter_map(|rule| {
+            rule_matches(rule, &extension, &file_content)
+                .map(|rule_match| issue_from_rule(rule, &rules_file_label, rule_match))
+        })
         .collect();
 
     Ok(issues)

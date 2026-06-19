@@ -25,6 +25,8 @@ type AnalysisIssue = {
   description: string;
   suggestion: string;
   matched_rule: string;
+  line?: number | null;
+  matched_text?: string | null;
 };
 
 function formatAnalysisMessage(
@@ -55,14 +57,23 @@ Nenhuma alteração foi aplicada no arquivo.`;
   }
 
   const issuesText = issues
-    .map(
-      (issue, index) => `Problema ${index + 1}
+    .map((issue, index) => {
+      const lineText = issue.line ? String(issue.line) : "não identificada";
+      const matchedText = issue.matched_text || "não informado";
+
+      return `Problema ${index + 1}
 
 Título:
 ${issue.title}
 
 Severidade:
 ${issue.severity}
+
+Linha:
+${lineText}
+
+Trecho encontrado:
+${matchedText}
 
 Descrição:
 ${issue.description}
@@ -71,8 +82,8 @@ Sugestão:
 ${issue.suggestion}
 
 Regra consultada:
-${issue.matched_rule}`
-    )
+${issue.matched_rule}`;
+    })
     .join("\n\n---\n\n");
 
   return `Análise local concluída.
