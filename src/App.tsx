@@ -27,6 +27,73 @@ type AnalysisIssue = {
   matched_rule: string;
 };
 
+function formatAnalysisMessage(
+  issues: AnalysisIssue[],
+  file: FileItem,
+  fileSize: number,
+  userRequest: string
+) {
+  if (issues.length === 0) {
+    return `Análise local concluída.
+
+Arquivo analisado:
+${file.relative_path}
+
+Tamanho:
+${fileSize} caracteres
+
+Pedido recebido:
+${userRequest}
+
+Resultado:
+Nenhum problema foi encontrado pelas regras locais atuais.
+
+Observação:
+Isso não garante que o código esteja perfeito. Só significa que nenhuma regra cadastrada encontrou problema. A máquina obedeceu, não virou oráculo.
+
+Nenhuma alteração foi aplicada no arquivo.`;
+  }
+
+  const issuesText = issues
+    .map(
+      (issue, index) => `Problema ${index + 1}
+
+Título:
+${issue.title}
+
+Severidade:
+${issue.severity}
+
+Descrição:
+${issue.description}
+
+Sugestão:
+${issue.suggestion}
+
+Regra consultada:
+${issue.matched_rule}`
+    )
+    .join("\n\n---\n\n");
+
+  return `Análise local concluída.
+
+Arquivo analisado:
+${file.relative_path}
+
+Tamanho:
+${fileSize} caracteres
+
+Pedido recebido:
+${userRequest}
+
+Problemas encontrados:
+${issues.length}
+
+${issuesText}
+
+Nenhuma alteração foi aplicada no arquivo.`;
+}
+
 function App() {
   const [projectPath, setProjectPath] = useState("");
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -35,6 +102,7 @@ function App() {
   const [chatText, setChatText] = useState("");
   const [isLoadingProject, setIsLoadingProject] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -87,7 +155,7 @@ function App() {
 ${selectedPath}
 
 Encontrei ${projectFiles.length} itens.
-Clique em um arquivo para visualizar.`,
+Clique em um arquivo para visualizar e analisar com as regras locais.`,
         },
       ]);
     } catch (error) {
@@ -124,74 +192,8 @@ Clique em um arquivo para visualizar.`,
   async function handleSendMessage() {
     const text = chatText.trim();
 
-    if (!text) {
+    if (!text || isAnalyzing) {
       return;
-    }
-
-    let assistantContent = "";
-
-    if (!selectedFile) {
-      assistantContent =
-        "Você ainda não selecionou nenhum arquivo. Abra um projeto e clique em um arquivo para eu analisar. Porque aparentemente até uma IA precisa que alguém aponte para o objeto antes de comentar sobre ele.";
-    } else if (!fileContent) {
-      assistantContent = `Arquivo selecionado: ${selectedFile.relative_path}
-
-Esse arquivo não tem conteúdo de texto carregado no momento. Pode ser uma imagem, um arquivo binário ou um arquivo que não foi lido como texto.`;
-    } else {
-      const previewLimit = 1200;
-      const preview =
-        fileContent.length > previewLimit
-          ? `${fileContent.slice(
-              0,
-              previewLimit
-            )}\n\n...conteúdo cortado para visualização inicial...`
-          : fileContent;
-
-      let analysisResult = "";
-
-      try {
-        const issues = await invoke<AnalysisIssue[]>("analyze_project_file", {
-          filePath: selectedFile.path,
-          relativePath: selectedFile.relative_path,
-          fileContent,
-        });
-
-        if (issues.length === 0) {
-          analysisResult =
-            "Análise local: nenhum problema conhecido foi encontrado pelas regras atuais.";
-        } else {
-          analysisResult = issues
-            .map(
-              (issue, index) => `${index + 1}. ${issue.title}
-Severidade: ${issue.severity}
-Descrição: ${issue.description}
-Sugestão: ${issue.suggestion}
-Regra consultada: ${issue.matched_rule}`
-            )
-            .join("\n\n");
-        }
-      } catch (error) {
-        analysisResult = `Não consegui executar a análise local: ${String(
-          error
-        )}`;
-      }
-
-      assistantContent = `Arquivo atual: ${selectedFile.relative_path}
-
-Tamanho do conteúdo: ${fileContent.length} caracteres.
-
-Pedido recebido:
-${text}
-
-Resultado da análise local:
-
-${analysisResult}
-
-Prévia do arquivo:
-
-${preview}
-
-O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda não aplica alterações automaticamente. Isso é bom, porque programa mexendo em pasta sem confirmação é basicamente um guaxinim com acesso de administrador.`;
     }
 
     setMessages((currentMessages) => [
@@ -200,13 +202,93 @@ O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda
         role: "user",
         content: text,
       },
-      {
-        role: "assistant",
-        content: assistantContent,
-      },
     ]);
 
     setChatText("");
+
+    if (!selectedFile) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content:
+            "Você ainda não selecionou nenhum arquivo. Abra um projeto e clique em um arquivo para eu analisar. O motor local precisa de um alvo, infelizmente.",
+        },
+      ]);
+
+      return;
+    }
+
+    if (!projectPath) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content:
+            "Nenhum projeto está aberto. Abra uma pasta antes de pedir análise.",
+        },
+      ]);
+
+      return;
+    }
+
+    if (!fileContent) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content: `Arquivo selecionado:
+${selectedFile.relative_path}
+
+Esse arquivo não tem conteúdo de texto carregado no momento. Pode ser uma imagem, um arquivo binário ou um arquivo com codificação incompatível.`,
+        },
+      ]);
+
+      return;
+    }
+
+    try {
+      setErrorMessage("");
+      setIsAnalyzing(true);
+
+      const issues = await invoke<AnalysisIssue[]>("analyze_project_file", {
+        projectRoot: projectPath,
+        filePath: selectedFile.path,
+        relativePath: selectedFile.relative_path,
+        fileContent,
+      });
+
+      const assistantContent = formatAnalysisMessage(
+        issues,
+        selectedFile,
+        fileContent.length,
+        text
+      );
+
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content: assistantContent,
+        },
+      ]);
+    } catch (error) {
+      const message = String(error);
+
+      setErrorMessage(message);
+
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: "assistant",
+          content: `Erro ao executar a análise local:
+
+${message}`,
+        },
+      ]);
+    } finally {
+      setIsAnalyzing(false);
+    }
   }
 
   return (
@@ -217,7 +299,7 @@ O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda
 
           <div>
             <h1>Raí Code</h1>
-            <p>Assistente desktop para dev</p>
+            <p>Assistente desktop local</p>
           </div>
         </div>
 
@@ -297,7 +379,7 @@ O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda
         <header className="panel-header">
           <div>
             <h2>Chat</h2>
-            <p>Peça análise, correção ou explicação</p>
+            <p>Análise local por regras</p>
           </div>
         </header>
 
@@ -322,11 +404,16 @@ O Raí Code agora já consegue consultar o primeiro motor local de regras. Ainda
           <textarea
             value={chatText}
             onChange={(event) => setChatText(event.target.value)}
-            placeholder="Ex: explique esse arquivo, corrija o erro, crie uma função..."
+            placeholder="Ex: analise esse arquivo, verifique erro, explique esse código..."
+            disabled={isAnalyzing}
           />
 
-          <button type="button" onClick={handleSendMessage}>
-            Enviar
+          <button
+            type="button"
+            onClick={handleSendMessage}
+            disabled={isAnalyzing}
+          >
+            {isAnalyzing ? "Analisando..." : "Enviar"}
           </button>
         </footer>
       </aside>

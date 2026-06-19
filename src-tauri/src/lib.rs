@@ -89,6 +89,55 @@ fn infer_project_root(file_path: &str, relative_path: &str) -> PathBuf {
     }
 }
 
+fn has_knowledge_index(path: &Path) -> bool {
+    path.join("knowledge").join("index.json").exists()
+}
+
+fn find_root_with_knowledge(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    for candidate in candidates {
+        let start = if candidate.is_file() {
+            candidate
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        } else {
+            candidate
+        };
+
+        for ancestor in start.ancestors() {
+            if has_knowledge_index(ancestor) {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_project_root(project_root: &str, file_path: &str, relative_path: &str) -> PathBuf {
+    let mut candidates = Vec::new();
+
+    if !project_root.trim().is_empty() {
+        candidates.push(PathBuf::from(project_root));
+    }
+
+    candidates.push(infer_project_root(file_path, relative_path));
+
+    let file_path_buf = PathBuf::from(file_path);
+
+    if let Some(parent) = file_path_buf.parent() {
+        candidates.push(parent.to_path_buf());
+    }
+
+    find_root_with_knowledge(candidates).unwrap_or_else(|| {
+        if !project_root.trim().is_empty() {
+            PathBuf::from(project_root)
+        } else {
+            infer_project_root(file_path, relative_path)
+        }
+    })
+}
+
 fn string_from_value(value: Option<&Value>) -> Option<String> {
     match value {
         Some(Value::String(text)) => Some(text.clone()),
@@ -201,11 +250,12 @@ fn extract_rules(rules_json: &Value) -> Vec<Value> {
 fn suggestion_from_rule(rule: &Value) -> String {
     match rule.get("suggestion") {
         Some(Value::String(text)) => text.clone(),
-        Some(Value::Object(_)) => string_from_value(rule.get("suggestion").and_then(|value| {
-            value.get("message")
-                .or_else(|| value.get("text"))
-                .or_else(|| value.get("description"))
-        }))
+        Some(Value::Object(suggestion)) => string_from_value(
+            suggestion
+                .get("message")
+                .or_else(|| suggestion.get("text"))
+                .or_else(|| suggestion.get("description")),
+        )
         .unwrap_or_else(|| "Revise o trecho indicado antes de alterar o arquivo.".to_string()),
         _ => string_from_value(rule.get("fix"))
             .or_else(|| string_from_value(rule.get("recommendation")))
@@ -456,13 +506,14 @@ fn read_project_file(file_path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn analyze_project_file(
+    project_root: String,
     file_path: String,
     relative_path: String,
     file_content: String,
 ) -> Result<Vec<AnalysisIssue>, String> {
     let extension = file_extension(&file_path);
-    let project_root = infer_project_root(&file_path, &relative_path);
-    let index_path = project_root.join("knowledge").join("index.json");
+    let resolved_root = resolve_project_root(&project_root, &file_path, &relative_path);
+    let index_path = resolved_root.join("knowledge").join("index.json");
 
     if !index_path.exists() {
         return Ok(vec![internal_issue(
@@ -473,7 +524,7 @@ fn analyze_project_file(
                 "O Raí Code procurou a base local em: {}",
                 index_path.display()
             ),
-            "Confirme se a pasta knowledge está na raiz do projeto aberto.",
+            "Confirme se a pasta knowledge está na raiz do projeto aberto ou em uma pasta acima do arquivo selecionado.",
             "knowledge/index.json",
         )]);
     }
@@ -502,8 +553,8 @@ fn analyze_project_file(
     };
 
     let rules_path = string_from_value(language_config.get("rules"))
-        .map(|raw_path| resolve_knowledge_path(&project_root, &raw_path))
-        .unwrap_or_else(|| fallback_rules_path(&project_root, &language));
+        .map(|raw_path| resolve_knowledge_path(&resolved_root, &raw_path))
+        .unwrap_or_else(|| fallback_rules_path(&resolved_root, &language));
 
     if !rules_path.exists() {
         return Ok(vec![internal_issue(
