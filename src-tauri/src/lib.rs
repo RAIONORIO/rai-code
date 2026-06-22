@@ -30,6 +30,13 @@ struct RuleMatch {
     matched_text: Option<String>,
 }
 
+#[derive(Clone)]
+struct InvokeCall {
+    command: String,
+    line: usize,
+    text: String,
+}
+
 const MAX_ITEMS: usize = 800;
 const MAX_DEPTH: usize = 6;
 const MAX_FILE_SIZE_BYTES: u64 = 800_000;
@@ -318,6 +325,28 @@ fn internal_issue(
     }
 }
 
+fn issue_with_location(
+    id: &str,
+    title: &str,
+    severity: &str,
+    description: &str,
+    suggestion: &str,
+    matched_rule: &str,
+    line: usize,
+    matched_text: String,
+) -> AnalysisIssue {
+    AnalysisIssue {
+        id: id.to_string(),
+        title: title.to_string(),
+        severity: severity.to_string(),
+        description: description.to_string(),
+        suggestion: suggestion.to_string(),
+        matched_rule: matched_rule.to_string(),
+        line: Some(line),
+        matched_text: Some(matched_text),
+    }
+}
+
 fn find_line_info(file_content: &str, pattern: &str) -> Option<RuleMatch> {
     if pattern.trim().is_empty() {
         return None;
@@ -431,10 +460,7 @@ fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> Option<Rul
         if captured_match.is_none() {
             captured_match = Some(RuleMatch {
                 line: None,
-                matched_text: Some(format!(
-                    "Ausente: {}",
-                    not_contains_any.join(" | ")
-                )),
+                matched_text: Some(format!("Ausente: {}", not_contains_any.join(" | "))),
             });
         }
     }
@@ -447,6 +473,211 @@ fn rule_matches(rule: &Value, extension: &str, file_content: &str) -> Option<Rul
     }
 
     None
+}
+
+fn extract_quoted_text_after(text: &str, start_index: usize) -> Option<String> {
+    let slice = text.get(start_index..)?;
+    let quote_start_relative = slice.find(|character| character == '"' || character == '\'')?;
+    let quote_char = slice.chars().nth(quote_start_relative)?;
+    let after_quote = slice.get(quote_start_relative + quote_char.len_utf8()..)?;
+    let quote_end_relative = after_quote.find(quote_char)?;
+
+    Some(after_quote.get(..quote_end_relative)?.to_string())
+}
+
+fn extract_invoke_command_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+
+    if trimmed.starts_with("import ") || trimmed.starts_with("export ") {
+        return None;
+    }
+
+    let invoke_index = line.find("invoke")?;
+    let after_invoke = line.get(invoke_index..)?;
+
+    if !(after_invoke.starts_with("invoke(") || after_invoke.starts_with("invoke<")) {
+        return None;
+    }
+
+    let open_parenthesis_relative = after_invoke.find('(')?;
+    let search_start = invoke_index + open_parenthesis_relative + 1;
+
+    extract_quoted_text_after(line, search_start)
+}
+
+fn extract_invoke_calls(file_content: &str) -> Vec<InvokeCall> {
+    file_content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            extract_invoke_command_from_line(line).map(|command| InvokeCall {
+                command,
+                line: index + 1,
+                text: line.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn rust_function_exists(rust_content: &str, command: &str) -> bool {
+    let patterns = [
+        format!("fn {}(", command),
+        format!("pub fn {}(", command),
+        format!("async fn {}(", command),
+        format!("pub async fn {}(", command),
+    ];
+
+    patterns
+        .iter()
+        .any(|pattern| rust_content.contains(pattern.as_str()))
+}
+
+fn generate_handler_contains_command(rust_content: &str, command: &str) -> bool {
+    if !rust_content.contains("tauri::generate_handler!") {
+        return false;
+    }
+
+    let Some(handler_start) = rust_content.find("tauri::generate_handler!") else {
+        return false;
+    };
+
+    let handler_content = &rust_content[handler_start..];
+
+    handler_content.contains(command)
+}
+
+fn validate_tauri_invoke_commands(project_root: &Path, file_content: &str) -> Vec<AnalysisIssue> {
+    let invoke_calls = extract_invoke_calls(file_content);
+
+    if invoke_calls.is_empty() {
+        return Vec::new();
+    }
+
+    let rust_file_path = project_root.join("src-tauri").join("src").join("lib.rs");
+
+    if !rust_file_path.exists() {
+        return invoke_calls
+            .into_iter()
+            .map(|call| {
+                issue_with_location(
+                    "typescript-tauri-lib-not-found",
+                    "Backend Rust não encontrado",
+                    "warning",
+                    &format!(
+                        "O frontend chama invoke para o comando \"{}\", mas o arquivo src-tauri/src/lib.rs não foi encontrado.",
+                        call.command
+                    ),
+                    "Confirme se este projeto usa Tauri e se o backend Rust está em src-tauri/src/lib.rs.",
+                    "knowledge/rules/typescript-rules.json",
+                    call.line,
+                    call.text,
+                )
+            })
+            .collect();
+    }
+
+    let rust_content = match fs::read_to_string(&rust_file_path) {
+        Ok(content) => content,
+        Err(error) => {
+            return invoke_calls
+                .into_iter()
+                .map(|call| {
+                    issue_with_location(
+                        "typescript-tauri-lib-read-error",
+                        "Não foi possível ler o backend Rust",
+                        "warning",
+                        &format!(
+                            "O frontend chama invoke para o comando \"{}\", mas o Raí Code não conseguiu ler src-tauri/src/lib.rs: {}",
+                            call.command, error
+                        ),
+                        "Verifique a permissão de leitura do arquivo src-tauri/src/lib.rs.",
+                        "knowledge/rules/typescript-rules.json",
+                        call.line,
+                        call.text,
+                    )
+                })
+                .collect();
+        }
+    };
+
+    let mut issues = Vec::new();
+
+    for call in invoke_calls {
+        let function_exists = rust_function_exists(&rust_content, &call.command);
+        let registered = generate_handler_contains_command(&rust_content, &call.command);
+
+        if !function_exists && !registered {
+            issues.push(issue_with_location(
+                "typescript-tauri-invoke-command-missing",
+                "Comando invoke não encontrado no backend Rust",
+                "error",
+                &format!(
+                    "O frontend chama invoke para \"{}\", mas não encontrei uma função Rust com esse nome nem registro no invoke_handler.",
+                    call.command
+                ),
+                &format!(
+                    "Crie a função #[tauri::command] fn {}(...) em src-tauri/src/lib.rs e registre {} dentro de tauri::generate_handler!.",
+                    call.command, call.command
+                ),
+                "knowledge/rules/typescript-rules.json",
+                call.line,
+                call.text,
+            ));
+
+            continue;
+        }
+
+        if !function_exists {
+            issues.push(issue_with_location(
+                "typescript-tauri-invoke-function-missing",
+                "Função Rust do invoke não encontrada",
+                "error",
+                &format!(
+                    "O frontend chama invoke para \"{}\", mas não encontrei uma função Rust com esse nome.",
+                    call.command
+                ),
+                &format!(
+                    "Crie a função #[tauri::command] fn {}(...) em src-tauri/src/lib.rs.",
+                    call.command
+                ),
+                "knowledge/rules/typescript-rules.json",
+                call.line,
+                call.text,
+            ));
+
+            continue;
+        }
+
+        if !registered {
+            issues.push(issue_with_location(
+                "typescript-tauri-invoke-not-registered",
+                "Comando invoke não registrado no Tauri",
+                "error",
+                &format!(
+                    "O frontend chama invoke para \"{}\" e a função Rust existe, mas não encontrei esse comando dentro de tauri::generate_handler!.",
+                    call.command
+                ),
+                &format!(
+                    "Adicione {} dentro de tauri::generate_handler![...] em src-tauri/src/lib.rs.",
+                    call.command
+                ),
+                "knowledge/rules/typescript-rules.json",
+                call.line,
+                call.text,
+            ));
+        }
+    }
+
+    issues
+}
+
+fn is_tauri_invoke_rule(rule: &Value) -> bool {
+    let id = rule_id(rule);
+
+    id == "typescript-tauri-invoke-command-check"
+        || id == "typescript-tauri-invoke-check"
+        || id.contains("tauri-invoke")
+        || id.contains("invoke-command")
 }
 
 fn collect_entries(
@@ -645,13 +876,18 @@ fn analyze_project_file(
         )]);
     }
 
-    let issues = rules
-        .iter()
-        .filter_map(|rule| {
-            rule_matches(rule, &extension, &file_content)
-                .map(|rule_match| issue_from_rule(rule, &rules_file_label, rule_match))
-        })
-        .collect();
+    let mut issues = Vec::new();
+
+    for rule in rules {
+        if is_tauri_invoke_rule(&rule) && (extension == ".ts" || extension == ".tsx") {
+            issues.extend(validate_tauri_invoke_commands(&resolved_root, &file_content));
+            continue;
+        }
+
+        if let Some(rule_match) = rule_matches(&rule, &extension, &file_content) {
+            issues.push(issue_from_rule(&rule, &rules_file_label, rule_match));
+        }
+    }
 
     Ok(issues)
 }
