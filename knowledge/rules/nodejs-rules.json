@@ -1,1 +1,97 @@
-{}
+{
+  "runtime": "nodejs",
+  "rules": [
+    {
+      "id": "nodejs-console-log",
+      "title": "Uso de console.log em runtime Node.js",
+      "severity": "info",
+      "description": "console.log pode ser útil durante testes rápidos, mas em aplicações Node.js reais é melhor usar logging controlado.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": ["console.log("]
+      },
+      "suggestion": {
+        "message": "Use uma biblioteca de log ou um logger interno com níveis como info, warn e error.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "nodejs-process-env-direct-access",
+      "title": "Acesso direto a process.env",
+      "severity": "info",
+      "description": "Acessar process.env diretamente em muitos pontos do código pode espalhar configuração e dificultar validação.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": ["process.env."]
+      },
+      "suggestion": {
+        "message": "Centralize variáveis de ambiente em um arquivo de configuração e valide valores obrigatórios na inicialização.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "nodejs-sync-fs-usage",
+      "title": "Uso de fs síncrono",
+      "severity": "warning",
+      "description": "Métodos síncronos do fs podem bloquear o event loop do Node.js e prejudicar desempenho.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": [
+          "readFileSync(",
+          "writeFileSync(",
+          "appendFileSync(",
+          "readdirSync(",
+          "statSync(",
+          "existsSync("
+        ]
+      },
+      "suggestion": {
+        "message": "Prefira APIs assíncronas, como fs.promises, quando estiver em fluxo de servidor ou operação sensível a desempenho.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "nodejs-eval-usage",
+      "title": "Uso de eval",
+      "severity": "error",
+      "description": "eval executa texto como código e pode criar vulnerabilidades graves de segurança.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": ["eval("]
+      },
+      "suggestion": {
+        "message": "Evite eval. Use parsing seguro, funções mapeadas em objetos ou bibliotecas específicas para interpretar dados.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "nodejs-child-process-exec",
+      "title": "Uso de child_process.exec",
+      "severity": "warning",
+      "description": "child_process.exec pode ser perigoso quando recebe entrada externa, pois executa comandos no sistema operacional.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": ["child_process.exec", "exec("]
+      },
+      "suggestion": {
+        "message": "Evite montar comandos com texto externo. Prefira execFile ou spawn com argumentos separados e validação rigorosa.",
+        "safeAutoFix": false
+      }
+    },
+    {
+      "id": "nodejs-missing-error-handling-promise",
+      "title": "Promise sem tratamento de erro",
+      "severity": "warning",
+      "description": "Promises sem catch ou tratamento adequado podem gerar falhas silenciosas ou erros não capturados.",
+      "detect": {
+        "extensions": [".js", ".mjs", ".cjs", ".ts"],
+        "contains": [".then("],
+        "notContainsAny": [".catch(", "try {"]
+      },
+      "suggestion": {
+        "message": "Adicione .catch(...) ou use async/await com try/catch quando a operação puder falhar.",
+        "safeAutoFix": false
+      }
+    }
+  ]
+}
